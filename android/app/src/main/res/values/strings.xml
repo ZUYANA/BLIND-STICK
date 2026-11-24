@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">STICK</string>
+    <string name="title_activity_main">STICK</string>
+    <string name="package_name">org.stick.navigation</string>
+    <string name="custom_url_scheme">org.stick.navigation</string>
+</resources>

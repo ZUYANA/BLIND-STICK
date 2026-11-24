@@ -1,0 +1,18 @@
+{
+  "rules": {
+    "locations": {
+      "$blindUserId": {
+        // Blind user can write their GPS location
+        // Paired guardian can read
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid == $blindUserId"
+      }
+    },
+    "deviceStatus": {
+      "$blindUserId": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid == $blindUserId"
+      }
+    }
+  }
+}
