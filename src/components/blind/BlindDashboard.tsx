@@ -125,10 +125,13 @@ export const BlindDashboard: React.FC<BlindDashboardProps> = ({
     });
   }, [currentLocation, activeRoute, navStatus, bleState, heading, user]);
 
-  // Voice Assistant Integration
+  // Update Voice Assistant location whenever GPS updates
   useEffect(() => {
     voiceAssistant.setUserLocation(currentLocation);
+  }, [currentLocation]);
 
+  // Voice Assistant Integration (Initialized once on mount)
+  useEffect(() => {
     voiceAssistant.setCallbacks({
       onNavigate: (route) => {
         handleStartNavigation(route);
@@ -140,7 +143,7 @@ export const BlindDashboard: React.FC<BlindDashboardProps> = ({
         handleStopNavigation();
       },
       onCallGuardian: () => {
-        speechService.speak('Guardian Ananya has been notified with your current coordinates in Chikkamagaluru.');
+        speechService.speak(`Guardian ${user?.pairedWithName || 'Ananya'} has been notified with your current coordinates in Chikkamagaluru.`);
       }
     });
 
@@ -162,7 +165,7 @@ export const BlindDashboard: React.FC<BlindDashboardProps> = ({
       unsubscribe();
       voiceAssistant.stopListening();
     };
-  }, [currentLocation]);
+  }, [user]);
 
   // Handle Starting Navigation
   const handleStartNavigation = (route: NavigationRoute) => {

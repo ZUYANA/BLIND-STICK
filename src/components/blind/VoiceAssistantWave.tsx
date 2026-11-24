@@ -1,7 +1,7 @@
 import React from 'react';
 import { AssistantState } from '../../types';
-import { Mic, MicOff, Volume2, Sparkles, MessageSquare, Compass, AlertCircle } from 'lucide-react';
-import { voiceAssistant } from '../../services/voiceAssistant';
+import { Mic, Volume2, Sparkles, MessageSquare, AlertCircle } from 'lucide-react';
+import { speechService } from '../../services/speechService';
 
 interface VoiceAssistantWaveProps {
   state: AssistantState;
@@ -35,6 +35,16 @@ export const VoiceAssistantWave: React.FC<VoiceAssistantWaveProps> = ({
     'Stop'
   ];
 
+  const handleChipClick = (phrase: string) => {
+    speechService.resumeAudioContext();
+    onSimulateVoiceCommand(phrase);
+  };
+
+  const handleMicClick = () => {
+    speechService.resumeAudioContext();
+    onManualTrigger();
+  };
+
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-2xl relative overflow-hidden backdrop-blur-md">
       {/* Top Status Bar */}
@@ -66,7 +76,7 @@ export const VoiceAssistantWave: React.FC<VoiceAssistantWaveProps> = ({
               : state === 'awaiting_confirmation'
               ? 'Awaiting your confirmation...'
               : state === 'searching_places'
-              ? 'Searching places...'
+              ? 'Searching places in Chikkamagaluru...'
               : 'Listening for "Hey STICK"'}
           </span>
         </div>
@@ -79,7 +89,7 @@ export const VoiceAssistantWave: React.FC<VoiceAssistantWaveProps> = ({
       {/* Main Interactive Mic & Sound Wave Animation */}
       <div className="flex flex-col items-center justify-center my-3">
         <button
-          onClick={onManualTrigger}
+          onClick={handleMicClick}
           aria-label={isActiveConversation ? 'STICK is listening' : 'Tap to activate Hey STICK'}
           className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl ${
             isSpeaking
@@ -144,17 +154,17 @@ export const VoiceAssistantWave: React.FC<VoiceAssistantWaveProps> = ({
         </div>
       )}
 
-      {/* Voice Shortcut Chips (Accessible backup for noisy environments or browser speech limits) */}
+      {/* Voice Shortcut Chips */}
       <div className="pt-2 border-t border-slate-800/80">
         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
           <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
-          Voice Command Shortcuts
+          Tap to Speak / Quick Voice Commands
         </div>
         <div className="flex flex-wrap gap-1.5">
           {suggestedPhrases.map((phrase) => (
             <button
               key={phrase}
-              onClick={() => onSimulateVoiceCommand(phrase)}
+              onClick={() => handleChipClick(phrase)}
               className="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 active:bg-sky-900 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition"
             >
               "{phrase}"
