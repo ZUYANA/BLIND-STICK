@@ -1,7 +1,13 @@
+import { Capacitor } from '@capacitor/core';
+import { TextToSpeech } from '@capacitor-community/text-to-speech';
+
 /**
- * Speech Service: High-quality Text-To-Speech (TTS) and Web Audio earcon synthesizers
+ * Speech Service: High-performance Text-To-Speech (TTS) and Web Audio earcon synthesizers
  * Engineered specifically for hands-free, accessible navigation for visually impaired users.
- * Hardened for Chrome Android, mobile WebViews, and desktop browsers.
+ * Supports:
+ *  1. Android Native TTS via @capacitor-community/text-to-speech (Direct hardware speaker output)
+ *  2. Web Speech API (speechSynthesis) for desktop/mobile browsers
+ *  3. Robust Fallback watchdog to ensure the assistant never hangs
  */
 
 class SpeechService {
@@ -10,8 +16,16 @@ class SpeechService {
   private selectedVoice: SpeechSynthesisVoice | null = null;
   private isSpeaking = false;
   private onSpeakingChangeCallbacks: Array<(speaking: boolean) => void> = [];
+  private isNative = false;
 
   constructor() {
+    this.isNative = Capacitor.isNativePlatform();
+
+    if (this.isNative) {
+      // Pre-warm the native Android TextToSpeech engine
+      TextToSpeech.getSupportedLanguages().catch(() => {});
+    }
+
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       this.synth = window.speechSynthesis;
       this.initVoices();
@@ -80,23 +94,92 @@ class SpeechService {
   }
 
   /**
-   * Speak text with safety watchdog timeout to prevent mobile Chrome from hanging indefinitely.
+   * Main Speak Method
+   * On Android APK: Routes to Native Android TextToSpeech for loud, clear physical speaker output.
+   * On Web: Routes to Web Speech API with watchdog timers.
    */
-  public speak(
+  public async speak(
     text: string,
     options?: { priority?: boolean; onEnd?: () => void; rate?: number }
+  ): Promise<void> {
+    const cleanText = text.trim();
+    if (!cleanText) {
+      options?.onEnd?.();
+      return;
+    }
+
+    this.resumeAudioContext();
+
+    if (options?.priority || this.isSpeaking) {
+      this.stop();
+    }
+
+    this.setSpeaking(true);
+
+    if (this.isNative) {
+      try {
+        await TextToSpeech.speak({
+          text: cleanText,
+          lang: 'en-US',
+          rate: options?.rate || 1.0,
+          pitch: 1.0,
+          volume: 1.0,
+          category: 'ambient'
+        });
+        this.setSpeaking(false);
+        options?.onEnd?.();
+        return;
+      } catch (nativeErr: any) {
+        console.warn('[SpeechService] Native TTS attempt 1 failed, retrying:', nativeErr);
+        // If Android TTS service was still binding, wait 350ms and retry once
+        if (
+          String(nativeErr).includes('Not yet initialized') ||
+          String(nativeErr).includes('unavailable')
+        ) {
+          await new Promise((r) => setTimeout(r, 350));
+          try {
+            await TextToSpeech.speak({
+              text: cleanText,
+              lang: 'en-US',
+              rate: options?.rate || 1.0,
+              pitch: 1.0,
+              volume: 1.0,
+              category: 'ambient'
+            });
+            this.setSpeaking(false);
+            options?.onEnd?.();
+            return;
+          } catch (retryErr) {
+            console.warn('[SpeechService] Native TTS retry failed:', retryErr);
+          }
+        }
+        // Fall back to browser Web Speech API
+        await this.speakBrowser(cleanText, options);
+        return;
+      }
+    } else {
+      // Running on Web Browser
+      await this.speakBrowser(cleanText, options);
+    }
+  }
+
+  /**
+   * Browser Web Speech API implementation with watchdog timer
+   */
+  private speakBrowser(
+    text: string,
+    options?: { onEnd?: () => void; rate?: number }
   ): Promise<void> {
     return new Promise((resolve) => {
       if (!this.synth) {
         console.warn('[SpeechService] SpeechSynthesis not supported in this browser.');
+        this.setSpeaking(false);
         options?.onEnd?.();
         resolve();
         return;
       }
 
-      this.resumeAudioContext();
-
-      if (options?.priority || this.synth.speaking) {
+      if (this.synth.speaking) {
         this.synth.cancel();
       }
 
@@ -134,8 +217,8 @@ class SpeechService {
         finish();
       };
 
-      // Watchdog Timer: Guarantee the promise resolves even if mobile browser drops onend
-      const estimatedDurationMs = Math.max(2500, Math.min(10000, text.length * 85 + 1000));
+      // Watchdog Timer: Guarantee the promise resolves even if browser drops onend
+      const estimatedDurationMs = Math.max(1800, Math.min(8000, text.length * 80 + 800));
       setTimeout(() => {
         finish();
       }, estimatedDurationMs);
@@ -150,12 +233,17 @@ class SpeechService {
   }
 
   public stop() {
+    if (this.isNative) {
+      try {
+        TextToSpeech.stop().catch(() => {});
+      } catch (_) {}
+    }
     if (this.synth) {
       try {
         this.synth.cancel();
       } catch (_) {}
-      this.setSpeaking(false);
     }
+    this.setSpeaking(false);
   }
 
   public isCurrentlySpeaking(): boolean {
@@ -168,6 +256,7 @@ class SpeechService {
     try {
       const ctx = this.getAudioContext();
       if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
       const now = ctx.currentTime;
 
       const osc1 = ctx.createOscillator();
@@ -179,7 +268,7 @@ class SpeechService {
       osc2.type = 'sine';
       osc2.frequency.setValueAtTime(659.25, now + 0.12); // E5
 
-      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.setValueAtTime(0.25, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
 
       osc1.connect(gain);
@@ -197,6 +286,7 @@ class SpeechService {
     try {
       const ctx = this.getAudioContext();
       if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
       const now = ctx.currentTime;
 
       const osc = ctx.createOscillator();
@@ -206,7 +296,7 @@ class SpeechService {
       osc.frequency.setValueAtTime(440, now);
       osc.frequency.setValueAtTime(880, now + 0.1);
 
-      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.setValueAtTime(0.25, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
 
       osc.connect(gain);
@@ -221,6 +311,7 @@ class SpeechService {
     try {
       const ctx = this.getAudioContext();
       if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
       const now = ctx.currentTime;
 
       const osc = ctx.createOscillator();
@@ -230,7 +321,7 @@ class SpeechService {
       osc.frequency.setValueAtTime(750, now);
       osc.frequency.setValueAtTime(600, now + 0.1);
 
-      gain.gain.setValueAtTime(0.3, now);
+      gain.gain.setValueAtTime(0.35, now);
       gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
 
       osc.connect(gain);
@@ -245,6 +336,7 @@ class SpeechService {
     try {
       const ctx = this.getAudioContext();
       if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
       const now = ctx.currentTime;
 
       const osc = ctx.createOscillator();

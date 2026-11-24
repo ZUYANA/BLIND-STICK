@@ -56,10 +56,12 @@ class VoiceAssistant {
       this.recognition = new SpeechRecognition();
       this.recognition.continuous = true;
       this.recognition.interimResults = true;
-      
+
       // Auto-detect Indian English or fallback to en-US for high-accuracy recognition
-      const isIndian = typeof navigator !== 'undefined' && 
-        (navigator.language?.includes('IN') || navigator.languages?.some(l => l.includes('IN')));
+      const isIndian =
+        typeof navigator !== 'undefined' &&
+        (navigator.language?.includes('IN') ||
+          navigator.languages?.some((l) => l.includes('IN')));
       this.recognition.lang = isIndian ? 'en-IN' : 'en-US';
 
       this.recognition.onstart = () => {
@@ -69,11 +71,6 @@ class VoiceAssistant {
       };
 
       this.recognition.onresult = (event: any) => {
-        // Echo Guard: completely ignore mic while STICK is speaking aloud
-        if (speechService.isCurrentlySpeaking() || this.state === 'speaking') {
-          return;
-        }
-
         let currentSentence = '';
         let isFinal = false;
 
@@ -88,6 +85,24 @@ class VoiceAssistant {
         const trimmed = currentSentence.trim();
         if (!trimmed) return;
 
+        const lowerTrimmed = trimmed.toLowerCase();
+
+        // Echo Guard: completely ignore mic while STICK is speaking aloud UNLESS user is saying wake phrase or emergency to interrupt
+        const isInterrupt =
+          lowerTrimmed.includes('hey stick') ||
+          lowerTrimmed.includes('hi stick') ||
+          lowerTrimmed.includes('stop') ||
+          lowerTrimmed.includes('emergency') ||
+          lowerTrimmed.includes('help');
+
+        if (speechService.isCurrentlySpeaking() || this.state === 'speaking') {
+          if (isInterrupt) {
+            speechService.stop();
+          } else {
+            return;
+          }
+        }
+
         this.transcript = trimmed;
         this.emitState();
 
@@ -96,21 +111,21 @@ class VoiceAssistant {
         if (isFinal) {
           this.processVoiceInputDebounced(trimmed);
         } else {
-          // Robust Silence Debounce: If user stops speaking for 800ms, process their input
-          // This fixes the major mobile Chrome bug where single-word answers (e.g. "great", "yes", "hospital")
-          // are never marked isFinal until prolonged silence!
+          // Robust Silence Debounce: If user pauses speaking for 800ms, process their input
           this.speechDebounceTimer = setTimeout(() => {
             if (this.transcript && this.transcript === trimmed) {
               this.processVoiceInputDebounced(trimmed);
             }
-          }, 850);
+          }, 800);
         }
       };
 
       this.recognition.onerror = (event: any) => {
         if (event.error === 'not-allowed') {
           this.micPermissionGranted = false;
-          console.warn('[VoiceAssistant] Microphone access blocked. Tap the mic button to grant access.');
+          console.warn(
+            '[VoiceAssistant] Microphone access blocked. Tap the mic button to grant access.'
+          );
         } else if (event.error !== 'no-speech') {
           console.warn('[VoiceAssistant] SpeechRecognition error:', event.error);
         }
@@ -145,8 +160,10 @@ class VoiceAssistant {
     this.lastProcessedInput = clean;
 
     setTimeout(() => {
-      this.lastProcessedInput = '';
-    }, 2000);
+      if (this.lastProcessedInput === clean) {
+        this.lastProcessedInput = '';
+      }
+    }, 1500);
 
     this.handleSpokenInput(rawText);
   }
@@ -254,23 +271,36 @@ class VoiceAssistant {
    * Conversational Brain & Intent Engine
    */
   public async handleSpokenInput(rawText: string) {
-    if (speechService.isCurrentlySpeaking() || this.state === 'speaking') {
-      return;
-    }
-
     const text = rawText.toLowerCase().trim();
     console.log(`[VoiceAssistant] Processing input: "${text}" (Current State: ${this.state})`);
 
-    // Priority 1: Emergency commands anytime
-    if (
+    // Check for Wake Phrase variations
+    const isWakePhrase =
+      text.includes('hey stick') ||
+      text.includes('hi stick') ||
+      text.includes('hello stick') ||
+      text.includes('stick') ||
+      text.includes('a stick') ||
+      text.includes('hey stik') ||
+      text.includes('hey steak') ||
+      text.includes('hey speak') ||
+      text.includes('plastic');
+
+    const isEmergency =
       text.includes('emergency') ||
       text.includes('help me') ||
       text.includes('sos') ||
       text.includes('danger') ||
-      text.includes('accident')
-    ) {
+      text.includes('accident');
+
+    // Priority 1: Emergency commands anytime
+    if (isEmergency) {
+      speechService.stop();
       speechService.playEmergencyAlarm();
-      await this.respondAndSpeak('Emergency triggered. Notifying your guardian and stopping navigation.', 'idle');
+      await this.respondAndSpeak(
+        'Emergency triggered. Notifying your guardian and stopping navigation.',
+        'idle'
+      );
       this.onEmergencyCallback?.();
       return;
     }
@@ -282,7 +312,10 @@ class VoiceAssistant {
       text.includes('contact guardian')
     ) {
       speechService.playConfirmChime();
-      await this.respondAndSpeak('Contacting your Guardian now and transmitting your live location in Chikkamagaluru.', 'idle');
+      await this.respondAndSpeak(
+        'Contacting your Guardian now and transmitting your live location in Chikkamagaluru.',
+        'idle'
+      );
       this.onCallGuardianCallback?.();
       return;
     }
@@ -302,7 +335,11 @@ class VoiceAssistant {
 
     // Priority 4: Status queries during active navigation
     if (this.isNavigating) {
-      if (text.includes('how far') || text.includes('distance') || text.includes('remaining time')) {
+      if (
+        text.includes('how far') ||
+        text.includes('distance') ||
+        text.includes('remaining time')
+      ) {
         const remainingDist = this.activeRoute?.distanceMeters || 400;
         const mins = Math.max(1, Math.round(remainingDist / 66));
         await this.respondAndSpeak(
@@ -314,7 +351,9 @@ class VoiceAssistant {
 
       if (text.includes('where am i') || text.includes('where are we')) {
         await this.respondAndSpeak(
-          `You are navigating in Chikkamagaluru towards ${this.activeRoute?.destinationName || 'your destination'}. The route is clear ahead.`,
+          `You are navigating in Chikkamagaluru towards ${
+            this.activeRoute?.destinationName || 'your destination'
+          }. The route is clear ahead.`,
           'navigating'
         );
         return;
@@ -339,22 +378,13 @@ class VoiceAssistant {
       }
 
       if (text.includes('take me back') || text.includes('go back')) {
-        await this.respondAndSpeak('Reversing route back to your starting point. Turn around safely.', 'navigating');
+        await this.respondAndSpeak(
+          'Reversing route back to your starting point. Turn around safely.',
+          'navigating'
+        );
         return;
       }
     }
-
-    // Check for Wake Phrase variations
-    const isWakePhrase =
-      text.includes('hey stick') ||
-      text.includes('hi stick') ||
-      text.includes('hello stick') ||
-      text.includes('stick') ||
-      text.includes('a stick') ||
-      text.includes('hey stik') ||
-      text.includes('hey steak') ||
-      text.includes('hey speak') ||
-      text.includes('plastic');
 
     // --- State: Awaiting Confirmation ("Would you like me to take you there?") ---
     if (this.state === 'awaiting_confirmation') {
@@ -371,7 +401,9 @@ class VoiceAssistant {
         text.includes('take me') ||
         text.includes('alright') ||
         text.includes('proceed') ||
-        text.includes('please');
+        text.includes('please') ||
+        text.includes('do it') ||
+        text.includes('confirm');
 
       const isNo =
         text.includes('no') ||
@@ -379,13 +411,16 @@ class VoiceAssistant {
         text.includes('cancel') ||
         text.includes('wait') ||
         text.includes('dont') ||
-        text.includes('not now');
+        text.includes("don't") ||
+        text.includes('not now') ||
+        text.includes('change') ||
+        text.includes('different');
 
       if (isYes) {
         speechService.playConfirmChime();
         if (this.proposedRoute) {
           const route = this.proposedRoute;
-          await this.respondAndSpeak("Alright! Let's get started.", 'navigating');
+          await this.respondAndSpeak('Alright! Starting turn by turn navigation.', 'navigating');
           this.onNavigateCallback?.(route);
         } else {
           await this.respondAndSpeak('Starting navigation mode.', 'navigating');
@@ -403,6 +438,13 @@ class VoiceAssistant {
         return;
       }
 
+      // Check if user changed their mind and named another place directly
+      const anotherQuery = this.cleanPlaceQuery(text);
+      if (anotherQuery && anotherQuery.length >= 3) {
+        await this.handleDestinationSearch(anotherQuery);
+        return;
+      }
+
       await this.respondAndSpeak(
         'Please say yes to start navigation, or no to choose another place.',
         'awaiting_confirmation'
@@ -412,6 +454,67 @@ class VoiceAssistant {
 
     // --- State: Awaiting Sentiment (STICK just asked: "Hey! How are you doing today?") ---
     if (this.state === 'awaiting_sentiment') {
+      // Check if user directly answered with random walk
+      if (
+        text.includes('random walk') ||
+        text.includes('just a walk') ||
+        text.includes('stroll') ||
+        text.includes('walk around')
+      ) {
+        await this.handleRandomWalkRequest();
+        return;
+      }
+
+      // Check if user directly named a destination
+      if (
+        text.includes('take me to') ||
+        text.includes('go to') ||
+        text.includes('find') ||
+        text.includes('hospital') ||
+        text.includes('restaurant') ||
+        text.includes('canteen') ||
+        text.includes('bus stand') ||
+        text.includes('bus stop') ||
+        text.includes('railway') ||
+        text.includes('shop') ||
+        text.includes('market') ||
+        text.includes('park') ||
+        text.includes('pharmacy')
+      ) {
+        const placeQuery = this.cleanPlaceQuery(text);
+        if (placeQuery && placeQuery.length >= 2) {
+          await this.handleDestinationSearch(placeQuery);
+          return;
+        }
+      }
+
+      // Negative Sentiment (Evaluated BEFORE positive)
+      const isNegative =
+        text.includes('not good') ||
+        text.includes('not well') ||
+        text.includes('not great') ||
+        text.includes('not okay') ||
+        text.includes('bad') ||
+        text.includes('tired') ||
+        text.includes('sad') ||
+        text.includes('difficult') ||
+        text.includes('rough') ||
+        text.includes('terrible') ||
+        text.includes('low') ||
+        text.includes('unwell') ||
+        text.includes('sick') ||
+        text.includes('worse') ||
+        text.includes('awful');
+
+      if (isNegative) {
+        await this.respondAndSpeak(
+          "I'm sorry you're having a difficult day. We can take things slowly. Where would you like to go, or would you prefer a random walk?",
+          'listening_destination'
+        );
+        return;
+      }
+
+      // Positive Sentiment
       const isPositive =
         text.includes('great') ||
         text.includes('good') ||
@@ -426,93 +529,77 @@ class VoiceAssistant {
         text.includes('well') ||
         text.includes('super') ||
         text.includes('better') ||
-        text.includes('all good');
-
-      const isNegative =
-        text.includes('worse') ||
-        text.includes('bad') ||
-        text.includes('tired') ||
-        text.includes('sad') ||
-        text.includes('difficult') ||
-        text.includes('rough') ||
-        text.includes('not good') ||
-        text.includes('terrible') ||
-        text.includes('low') ||
-        text.includes('unwell') ||
-        text.includes('sick');
+        text.includes('all good') ||
+        text.includes('doing good') ||
+        text.includes("i'm good") ||
+        text.includes('im good') ||
+        text.includes('i am good') ||
+        text.includes("i'm fine") ||
+        text.includes('im fine') ||
+        text.includes('i am fine') ||
+        text.includes('not bad');
 
       if (isPositive) {
-        if (text.includes('great') || text.includes('awesome') || text.includes('super')) {
-          await this.respondAndSpeak(
-            "That's good to hear! Where would you like to go today? Or would you like to take a random walk?",
-            'listening_destination'
-          );
-        } else {
-          await this.respondAndSpeak(
-            "Glad to hear that! Where are we heading today, or would you prefer a random walk?",
-            'listening_destination'
-          );
-        }
-        return;
-      }
-
-      if (isNegative) {
         await this.respondAndSpeak(
-          "I'm sorry you're having a difficult day. We can take things slowly. Would you like to go somewhere or just take a walk?",
+          'Glad to hear that! Where are we heading today, or would you prefer a random walk?',
           'listening_destination'
         );
         return;
       }
 
-      // Check if user skipped sentiment and immediately asked for a destination
-      if (text.includes('random walk') || text.includes('just a walk') || text.includes('stroll')) {
-        await this.handleRandomWalkRequest();
+      // Check if user said a specific location name in Chikkamagaluru
+      const fallbackQuery = this.cleanPlaceQuery(text);
+      if (fallbackQuery && fallbackQuery.length >= 2) {
+        await this.handleDestinationSearch(fallbackQuery);
         return;
       }
 
-      if (
-        text.includes('hospital') ||
-        text.includes('restaurant') ||
-        text.includes('canteen') ||
-        text.includes('bus stand') ||
-        text.includes('railway') ||
-        text.includes('shop') ||
-        text.includes('market') ||
-        text.includes('park') ||
-        text.includes('pharmacy')
-      ) {
-        const placeQuery = this.cleanPlaceQuery(text);
-        if (placeQuery) {
-          await this.handleDestinationSearch(placeQuery);
-          return;
-        }
-      }
-
-      // Default polite reply
+      // Default conversational prompt
       await this.respondAndSpeak(
-        "Thanks for sharing. Where would you like to go today, or would you prefer a random walk?",
+        'Where would you like to head today? You can say hospital, restaurant, bus stand, or random walk.',
         'listening_destination'
       );
       return;
     }
 
-    // --- State: Listening for Destination (or user says destination directly from Idle) ---
-    // Check for Random Walk first
-    if (
-      text.includes('random walk') ||
-      text.includes('just take a walk') ||
-      text.includes('take a walk') ||
-      text.includes('just a walk') ||
-      text.includes('stroll') ||
-      text.includes('walk around')
-    ) {
-      await this.handleRandomWalkRequest();
+    // --- State: Listening for Destination ---
+    if (this.state === 'listening_destination') {
+      if (
+        text.includes('random walk') ||
+        text.includes('just take a walk') ||
+        text.includes('take a walk') ||
+        text.includes('just a walk') ||
+        text.includes('stroll') ||
+        text.includes('walk around') ||
+        text === 'walk'
+      ) {
+        await this.handleRandomWalkRequest();
+        return;
+      }
+
+      const placeQuery = this.cleanPlaceQuery(text);
+      if (placeQuery && placeQuery.length >= 2) {
+        await this.handleDestinationSearch(placeQuery);
+        return;
+      }
+
+      await this.respondAndSpeak(
+        'Where would you like to head? You can say hospital, restaurant, bus stand, or random walk.',
+        'listening_destination'
+      );
       return;
     }
 
-    // Check for Destination Search
+    // --- State: Idle / Greeting ---
+    // If the user says "Hey STICK", activate conversational greeting
+    if (isWakePhrase) {
+      speechService.playWakeChime();
+      await this.respondAndSpeak('Hey! How are you doing today?', 'awaiting_sentiment');
+      return;
+    }
+
+    // Direct destination from Idle state (e.g. "Hey STICK, take me to hospital" or just "take me to hospital")
     if (
-      this.state === 'listening_destination' ||
       text.includes('hospital') ||
       text.includes('restaurant') ||
       text.includes('canteen') ||
@@ -536,26 +623,16 @@ class VoiceAssistant {
       }
     }
 
-    // --- State: Idle / Greeting ---
-    // If the user says "Hey STICK", activate the conversational greeting
-    if (isWakePhrase) {
-      speechService.playWakeChime();
-      await this.respondAndSpeak('Hey! How are you doing today?', 'awaiting_sentiment');
+    if (
+      text.includes('random walk') ||
+      text.includes('just take a walk') ||
+      text.includes('take a walk') ||
+      text.includes('just a walk') ||
+      text.includes('stroll') ||
+      text.includes('walk around')
+    ) {
+      await this.handleRandomWalkRequest();
       return;
-    }
-
-    // Fallback: If in listening_destination and user speaks a standalone name (e.g. "Azad Park" or "Town Canteen")
-    if (this.state === 'listening_destination') {
-      const fallbackQuery = this.cleanPlaceQuery(text);
-      if (fallbackQuery && fallbackQuery.length >= 2) {
-        await this.handleDestinationSearch(fallbackQuery);
-        return;
-      }
-
-      await this.respondAndSpeak(
-        'Where would you like to head? You can say hospital, restaurant, bus stand, or random walk.',
-        'listening_destination'
-      );
     }
   }
 
@@ -579,8 +656,14 @@ class VoiceAssistant {
       .replace(/i want to visit a/g, '')
       .replace(/i want to visit/g, '')
       .replace(/i want to go to/g, '')
+      .replace(/navigate to the/g, '')
+      .replace(/navigate to a/g, '')
       .replace(/navigate to/g, '')
+      .replace(/go to the/g, '')
+      .replace(/go to a/g, '')
       .replace(/go to/g, '')
+      .replace(/show me the route to/g, '')
+      .replace(/show me the way to/g, '')
       .replace(/nearby/g, '')
       .replace(/please/g, '')
       .replace(/around here/g, '')
@@ -593,7 +676,7 @@ class VoiceAssistant {
   public async handleDestinationSearch(destinationQuery: string) {
     this.state = 'searching_places';
     this.emitState();
-    speechService.speak('Searching destinations in Chikkamagaluru...');
+    speechService.playConfirmChime();
 
     const places = await placesService.searchPlaces(destinationQuery, this.userLocation);
 
@@ -630,7 +713,7 @@ class VoiceAssistant {
   public async handleRandomWalkRequest() {
     this.state = 'searching_places';
     this.emitState();
-    speechService.speak('Planning a safe pedestrian walk nearby...');
+    speechService.playConfirmChime();
 
     const route = await routingService.planRandomWalk(this.userLocation);
     this.proposedRoute = route;
